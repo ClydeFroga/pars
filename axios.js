@@ -5,8 +5,9 @@ const fs = require("node:fs");
 const { hideBin } = require("yargs/helpers");
 const yargs = require("yargs/yargs");
 
+// Парсим аргументы командной строки
 const argv = yargs(hideBin(process.argv))
-  .command("$0 <url>", "Ссылка", (yargs) => {
+  .command("$0 <url>", "Ссылка на продукт", (yargs) => {
     yargs.positional("url", {
       description: "URL продукта",
       type: "string",
@@ -18,94 +19,77 @@ const argv = yargs(hideBin(process.argv))
 // Создаём экземпляр CookieJar
 const jar = new CookieJar();
 
-function createLink(url) {
-  return `/api/composer-api.bx/page/json/v2?url=${url}`;
+// Создаём клиент Axios с поддержкой куков
+const client = wrapper(
+  axios.create({
+    jar,
+    baseURL: "https://ozon.ru",
+    headers: {
+      "User-Agent": "ozonapp_android/17.48.0+2528",
+      Accept: "*/*",
+    },
+  })
+);
+
+// Функция для извлечения ID продукта из URL
+function extractProductId(url) {
+  const match = url.match(/https:\/\/www\.ozon\.ru\/product\/([^\/]+)/);
+  if (!match) throw new Error("Некорректный URL продукта");
+  return match[1];
 }
 
-function createFile(reviewsAll) {
-  let text = reviewsAll.link + "\n";
-
-  for (let index = 0; index < reviewsAll.texts.length; index++) {
-    let item = reviewsAll.texts[index];
-    text += `Текст Отзыва_${index}: ${item}\n`;
-  }
-
-  fs.writeFileSync("reviews-api.txt", text, "utf-8");
+// Функция для записи отзывов в файл
+function saveReviewsToFile(reviews, url) {
+  const content = `Ссылка на товар: ${url}\n${reviews
+    .map((text, index) => `Текст Отзыва_${index}: ${text}`)
+    .join("\n")}`;
+  fs.writeFileSync("reviews-api.txt", content, "utf-8");
 }
 
+// Основная функция для получения отзывов
 async function fetchProductReviews(url) {
-  const baseURL = "https://ozon.ru/";
-  // Оборачиваем Axios для поддержки куков
-  const client = wrapper(
-    axios.create({
-      jar,
-      baseURL,
-      headers: {
-        Connection: "keep-alive",
-        Host: "www.ozon.ru",
-        Accept: "*/*",
-        "User-Agent": "ozonapp_android/17.48.0+2528",
-      },
-    }),
-  );
+  const productId = extractProductId(url);
+  const reviews = [];
+  let nextPageLink = null;
 
-  try {
-    const startLink = url.match(/https:\/\/www\.ozon\.ru\/product\/([^\/]+)/);
+  // Делаем GET-запрос к странице товара, чтобы получить куки
+  await client.get("api/composer-api.bx/page/json/v2", {
+    params: {
+      url: `/product/${productId}/review/list`,
+    },
+    maxRedirects: 0,
+    validateStatus: (status) => status >= 200 && status < 400, // Разрешаем все статусы
+  });
 
-    const newLink = `/api/composer-api.bx/page/json/v2`;
-
-    // Делаем GET-запрос к странице товара
-    await client.get(newLink, {
+  while (true) {
+    const response = await client.get("/api/composer-api.bx/page/json/v2", {
       params: {
-        url: `/product/${startLink[1]}/review/list`,
+        url: `/product/${nextPageLink || productId}/review/list`,
         showNextPageParams: true,
       },
-      maxRedirects: 0,
-      validateStatus: (status) => status >= 200 && status < 400, // Разрешаем все статусы
     });
 
-    const reviewsAll = { link: `Ссылка на товар: ${url}`, texts: [] };
-    let link;
+    const widgetStates = response.data.widgetStates;
+    const reviewsData = Object.keys(widgetStates)
+      .filter((key) => /listReviews/.test(key))
+      .map((key) => JSON.parse(widgetStates[key]))[0];
 
-    while (true) {
-      let match;
-      if (link) {
-        match = createLink(link);
-      }
+    if (!reviewsData) break;
 
-      const response = await client.get(newLink, {
-        params: {
-          url: `/product/${match ?? startLink[1]}/review/list`,
-          showNextPageParams: true,
-        },
+    reviewsData.reviews.forEach((review) => {
+      review.bodySections.forEach((section) => {
+        reviews.push(section.descriptionAtom.text);
       });
+    });
 
-      const widgetStates = response.data.widgetStates;
-      let reviews;
-      for (let key in widgetStates) {
-        if (/listReviews/.test(key)) {
-          reviews = JSON.parse(widgetStates[key]);
-        }
-      }
-
-      if (!reviews) {
-        break;
-      }
-
-      for (const review of reviews.reviews) {
-        for (let oneOFMany of review.bodySections) {
-          reviewsAll.texts.push(oneOFMany.descriptionAtom.text);
-        }
-      }
-      link = response.data.nextPage;
-    }
-
-    createFile(reviewsAll);
-  } catch (error) {
-    console.log(error); // Статус ответа
+    nextPageLink = response.data.nextPage;
+    if (!nextPageLink) break;
   }
+
+  saveReviewsToFile(reviews, url);
 }
 
+// Запуск
 fetchProductReviews(argv.url)
   .then(() => console.log("Завершено"))
-  .catch(console.error);
+  .catch((error) => console.error("Ошибка:", error.message));
