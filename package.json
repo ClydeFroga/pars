@@ -1,0 +1,19 @@
+{
+  "name": "product-scraper",
+  "version": "1.0.0",
+  "description": "Product page scraper using Puppeteer",
+  "main": "puppeteer.js",
+  "scripts": {
+    "start": "node puppeteer.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "axios-cookiejar-support": "^5.0.5",
+    "axios-debug-log": "^1.0.0",
+    "puppeteer": "^24.1.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "tough-cookie": "^5.1.1",
+    "yargs": "^17.7.2"
+  }
+}
