@@ -1,12 +1,36 @@
 const axios = require("axios");
 const { CookieJar } = require("tough-cookie");
 const { wrapper } = require("axios-cookiejar-support");
+const fs = require("node:fs");
+const { hideBin } = require("yargs/helpers");
+const yargs = require("yargs/yargs");
+
+const argv = yargs(hideBin(process.argv))
+  .command("$0 <url>", "Ссылка", (yargs) => {
+    yargs.positional("url", {
+      description: "URL продукта",
+      type: "string",
+      demandOption: true,
+    });
+  })
+  .help().argv;
 
 // Создаём экземпляр CookieJar
 const jar = new CookieJar();
 
 function createLink(url) {
   return `/api/composer-api.bx/page/json/v2?url=${url}`;
+}
+
+function createFile(reviewsAll) {
+  let text = reviewsAll.link + "\n";
+
+  for (let index = 0; index < reviewsAll.texts.length; index++) {
+    let item = reviewsAll.texts[index];
+    text += `Текст Отзыва_${index}: ${item}\n`;
+  }
+
+  fs.writeFileSync("reviews-api.txt", text, "utf-8");
 }
 
 async function fetchProductReviews(url) {
@@ -26,70 +50,62 @@ async function fetchProductReviews(url) {
   );
 
   try {
-    const match = url.match(/https:\/\/www\.ozon\.ru\/product\/([^\/]+)/);
+    const startLink = url.match(/https:\/\/www\.ozon\.ru\/product\/([^\/]+)/);
 
     const newLink = `/api/composer-api.bx/page/json/v2`;
 
     // Делаем GET-запрос к странице товара
     await client.get(newLink, {
       params: {
-        url: `/product/${match[1]}/review/list`,
+        url: `/product/${startLink[1]}/review/list`,
         showNextPageParams: true,
       },
       maxRedirects: 0,
       validateStatus: (status) => status >= 200 && status < 400, // Разрешаем все статусы
     });
 
-    console.log(await jar.getCookies(baseURL));
-
-    let hasNextPage = true;
-
-    const reviews = [];
-    let index = 0;
+    const reviewsAll = { link: `Ссылка на товар: ${url}`, texts: [] };
     let link;
 
-    while (hasNextPage) {
+    while (true) {
+      let match;
+      if (link) {
+        match = createLink(link);
+      }
+
       const response = await client.get(newLink, {
         params: {
-          url: `/product/${match[1]}/review/list`,
+          url: `/product/${match ?? startLink[1]}/review/list`,
           showNextPageParams: true,
         },
       });
 
       const widgetStates = response.data.widgetStates;
-
-      for (let [key, value] of Object.entries(widgetStates)) {
+      let reviews;
+      for (let key in widgetStates) {
         if (/listReviews/.test(key)) {
-          const parsed = JSON.parse(value);
-
-          parsed.reviews.forEach((review) => {
-            if (review.bodySections && Array.isArray(review.bodySections)) {
-              review.bodySections.forEach((section) => {
-                if (section.descriptionAtom && section.descriptionAtom.text) {
-                  reviews.push({
-                    index: index,
-                    text: section.descriptionAtom.text,
-                    answer: "",
-                  });
-                }
-
-                index++;
-              });
-            }
-          });
-        } else {
-          hasNextPage = false;
-          break;
+          reviews = JSON.parse(widgetStates[key]);
         }
       }
-      link = createLink(response.data.nextPage);
+
+      if (!reviews) {
+        break;
+      }
+
+      for (const review of reviews.reviews) {
+        for (let oneOFMany of review.bodySections) {
+          reviewsAll.texts.push(oneOFMany.descriptionAtom.text);
+        }
+      }
+      link = response.data.nextPage;
     }
+
+    createFile(reviewsAll);
   } catch (error) {
-    console.log("Блшя"); // Статус ответа
+    console.log(error); // Статус ответа
   }
 }
 
-// fetchProductReviews('api/composer-api.bx/page/json/v2?url=/product/vesy-kuhonnye-elektronnye-vesy-dlya-kofe-1555634374/review/list&productReviewsURL=mobWebReviewURL&showNextPageParams=true');
-fetchProductReviews(
-  "https://www.ozon.ru/product/botinki-romax-1698219158/?campaignId=527",
-);
+fetchProductReviews(argv.url)
+  .then(() => console.log("Завершено"))
+  .catch(console.error);
